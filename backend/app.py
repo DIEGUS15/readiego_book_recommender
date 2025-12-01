@@ -2,49 +2,68 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from graph_engine import GraphEngine
 from recommender import BookRecommender
+from hybrid_recommender import HybridRecommender
 from data_loader import DataLoader
+from app_routes import register_auth_routes
 import sys
+import os
 
 app = Flask(__name__)
-CORS(app)
+
+# Configuración de CORS
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
+
+# Secret key para sesiones
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
 
 # Variables globales
 graph_engine = None
 recommender = None
+hybrid_recommender = None
 data_loader = None
 
 def initialize_system(use_sample=True, sample_size=10000):
     """
-    Inicializa el sistema cargando los datos
+    Inicializa el sistema cargando los datos desde PostgreSQL
     use_sample: Si True, usa solo una muestra de datos (recomendado para desarrollo)
     sample_size: Tamaño de la muestra
     """
-    global graph_engine, recommender, data_loader
-    
+    global graph_engine, recommender, hybrid_recommender, data_loader
+
     print("🚀 Iniciando sistema de recomendación...")
-    
-    # Cargar datos
-    data_loader = DataLoader('../data')
-    
+    print("📊 Cargando datos desde PostgreSQL...")
+
+    # Cargar datos desde base de datos (no necesita ruta)
+    data_loader = DataLoader()
+
     try:
         if use_sample:
             books_df, ratings_df, users_df = data_loader.load_all(sample_size=sample_size)
         else:
             books_df, ratings_df, users_df = data_loader.load_all()
-    except FileNotFoundError as e:
-        print(f"❌ Error: No se encontraron los archivos CSV en la carpeta 'data/'")
-        print(f"   Asegúrate de descargar Books.csv, Ratings.csv y Users.csv de Kaggle")
+    except Exception as e:
+        print(f"❌ Error: No se pudo conectar a la base de datos PostgreSQL")
+        print(f"   Detalles: {e}")
+        print(f"   Asegúrate de que PostgreSQL esté corriendo y que las credenciales en .env sean correctas")
         sys.exit(1)
-    
+
     # Crear grafo
     graph_engine = GraphEngine()
     processed_ratings = data_loader.get_processed_ratings()
     graph_engine.load_from_dataframe(processed_ratings)
-    
-    # Crear recomendador
+
+    # Crear recomendadores
     recommender = BookRecommender(graph_engine)
-    
+    hybrid_recommender = HybridRecommender(graph_engine, data_loader)
+
     print("✅ Sistema listo!")
+    print("   🎯 Recomendador híbrido habilitado")
     return True
 
 @app.route('/')
@@ -191,14 +210,29 @@ if __name__ == '__main__':
     # Inicializar con muestra de 10,000 calificaciones para desarrollo
     # Cambia a use_sample=False para usar todos los datos
     initialize_system(use_sample=True, sample_size=10000)
-    
+
+    # Registrar las nuevas rutas de autenticación y gestión
+    register_auth_routes(app, data_loader, recommender, hybrid_recommender, graph_engine)
+
     print("\n📚 Endpoints disponibles:")
+    print("\n  🔐 Autenticación:")
+    print("  - POST /api/auth/register")
+    print("  - POST /api/auth/login")
+    print("  - GET  /api/auth/me")
+    print("\n  📖 Catálogo:")
+    print("  - GET  /api/catalog/books")
+    print("\n  ⭐ Calificaciones:")
+    print("  - GET  /api/ratings/my-ratings")
+    print("  - POST /api/ratings/rate")
+    print("  - DELETE /api/ratings/delete/<isbn>")
+    print("\n  🎯 Recomendaciones:")
+    print("  - GET  /api/recommendations/for-me")
+    print("\n  📊 Sistema (legacy):")
     print("  - GET  /api/health")
     print("  - GET  /api/recommend/user/<user_id>")
     print("  - GET  /api/recommend/book/<isbn>")
     print("  - GET  /api/book/<isbn>")
-    print("  - GET  /api/user/<user_id>")
-    print("  - GET  /api/user/<user_id>/books")
-    print("\n🌐 Servidor: http://localhost:5000\n")
-    
+    print("\n🌐 Servidor: http://localhost:5000")
+    print("👤 Usuarios de prueba: juan, maria, carlos (password: password123)\n")
+
     app.run(debug=True, host='0.0.0.0', port=5000)
